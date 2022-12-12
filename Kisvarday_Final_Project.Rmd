@@ -1,0 +1,792 @@
+---
+title: "BMI 715 Final Project: *** "
+author: "Susannah Kisvarday"
+output:
+  html_document: 
+    toc: true
+    toc_depth: 3
+    toc_float: true
+  html_notebook: default
+  pdf_document: default
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = T)
+library(tidyverse)
+library(dplyr)
+library(MASS)
+library(caret)
+library(Metrics)
+```
+
+# Importing the data
+
+```{r}
+nhanes_raw <- read.csv("C:/BMI Masters/Fall2022/BMI715/Week7/nhanes_13_14_subset.csv")
+
+#Seeing how many observations and variables I have to work with:
+dim(nhanes_raw)
+```
+
+
+## Exploring the data
+
+I scrolled through the Excel file and there seem to be quite a lot of NAs.  10,175 rows of data seems like a good amount of observations, but I some columns seem to be mostly NA.  Just to better understand what data I actually have, I wanted to see how many observations were available for each variable.
+
+```{r, eval=TRUE}
+
+nhanes_obs_count <- as.data.frame(apply(!is.na(nhanes_raw), 2, sum))
+
+#  renaming that unfortunate column name :`apply(!is.na(nhanes_raw), 2, sum)`
+
+nhanes_obsCount <- nhanes_obs_count %>% rename(ObsCount = `apply(!is.na(nhanes_raw), 2, sum)`)
+
+#calling the dataframe, so that I can see which variables have more information to work with:
+nhanes_obsCount
+
+```
+
+I noticed that there are a lot of columns that have very few observations (for instance one column had only 2 data points).  
+Getting and idea of what variables have data (rather than NA) for more than half of the observations. 
+
+```{r, eval=TRUE}
+
+sum(nhanes_obsCount$ObsCount > 5000)
+nhn_5000 <- nhanes_obsCount %>% filter(nhanes_obsCount$ObsCount > 5000)
+nhn_5000
+
+
+```
+
+
+Getting a deeper look at some of the variables such as counts for children with asthm, how many people have psoriasis, and hemoglobin A1c range.
+
+```{r}
+
+#Graph of the age variable to get an idea of the pediatric observations available:
+
+hist(nhanes_raw$RIDAGEYR)
+ped <- nhanes_raw %>% filter(RIDAGEYR < 25)
+hist(ped$RIDAGEYR)
+hist(ped$MCQ010)
+nrow(ped)
+
+#checking for pediatric asthma in particular:
+ped_asthma <- ped %>% filter(MCQ010 == 1)
+nrow(ped_asthma)
+
+#psoriasis is intriguing because we don't have a clear understanding of the risk factors for psoriasis:
+psor <- nhanes_raw %>% filter(MCQ070 == 1)
+nrow(psor)
+#however after looking more carefully at the rest of the variables available, I don't think there are enough evalable variables that could potentially be related to psoriasis, so:
+
+#How about looking at risk factors for diabetes?  A1c would be a good marker of diabetes IF we have an adequate range of A1c values.
+nhn_GH_noNA <- nhanes_raw %>% filter(!is.na(LBXGH))
+nrow(nhn_GH_noNA)
+
+min(nhn_GH_noNA$LBXGH)
+max(nhn_GH_noNA$LBXGH)
+
+#Looks like we have good data for A1c, there are many potential risk factor variables included in this data set, and I found a very nice article related to trying to determine diabetes risk factors.  I think we have a winner.  
+
+
+```
+
+
+
+
+Looking closer at the normality assumption for the LBXGH data: 
+
+```{r, eval=TRUE}
+
+
+hist(nhn_GH_noNA$LBXGH)
+
+# A1c has a clear right-skew.  Log transformation will help this data become more like a normal distribution.
+
+DM_log <- log(nhn_GH_noNA$LBXGH)
+hist(DM_log)
+
+#The data still have a right skew, but I have clear improvement.
+
+DM_sqrt <- sqrt(nhn_GH_noNA$LBXGH)
+hist(DM_sqrt)
+
+DM_cubeRoot <- (nhn_GH_noNA$LBXGH)^(1/3)
+hist(DM_cubeRoot)
+
+
+
+#Trying to estimate whether any of these transformed data vectors would pass the normality assumption by doing a Shapiro-Wilk test on samples from the data vectors (R tells me that for shapiro.test, sample size must be between 3 and 5000).
+
+#pull a random sample from each data vector
+set.seed(715)
+
+sample_A1c <- createDataPartition(y = nhn_GH_noNA$LBXGH, p = 0.6, list = FALSE)
+nrow(sample_A1c)
+sample_log <- createDataPartition(y = DM_log, p = 0.6, list = FALSE)
+sample_sqrt <- createDataPartition(y = DM_sqrt, p = 0.6, list = FALSE)
+sample_cubeRoot <- createDataPartition(y = DM_cubeRoot, p = 0.6, list = FALSE)
+
+shapiro.test(sample_A1c)
+shapiro.test(sample_log)
+shapiro.test(sample_sqrt)
+shapiro.test(sample_cubeRoot)
+
+```
+
+
+
+
+
+Looking closer at the diabetes data's relationship to some of the other variables: 
+
+```{r, eval=TRUE}
+
+
+plot(nhn_GH_noNA$RIDAGEYR, nhn_GH_noNA$LBXGH)
+plot(nhn_GH_noNA$RIDAGEYR, DM_log)
+plot(nhn_GH_noNA$LBXSATSI, DM_log)
+plot(nhn_GH_noNA$LBXPFUA, DM_log)
+plot(nhn_GH_noNA$BPQ020, nhn_GH_noNA$LBXGH)
+unique(nhn_GH_noNA$BPQ020)
+nhn_GH_noNA%>%filter(BPQ020==9)
+
+
+```
+
+
+
+
+
+## Paper on Diabetes Risk Factors
+
+Black text
+Black text
+
+```{txt}
+
+#Here is a URL link to the paper that is the inspiration for this project.  
+
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5860745/pdf/pone.0194127.pdf
+
+#To be clear, HgbA1c is a marker of diabetes, and diabetes disease definition is HgbA1c > 6.5.  I am not creating a model for whether a person has diabetes or not; my model will be predicting HgbA1c level based on the variables identified in the above paper and other variables that were available in our dataset.  
+
+```
+
+Black text
+Black text
+
+
+# Pulling together the Variables of potential interest
+
+Making a data frame with just the variables of potential interest 
+
+```{r, eval=TRUE}
+
+nhn_DM <- nhanes_raw %>% select(LBXGH, LBXSUA, LBXSGTSI, LBXSATSI, LBXSCH, RIDAGEYR, IND235, MCQ080, MCQ300C, PAQ710, PAQ715, PAQ655, PAQ706, SLQ050, SLQ060, BPQ020, BPXSY1, MCQ365A) 
+
+head(nhn_DM)
+str(nhn_DM)
+
+```
+
+
+# Examining these variables a little more closely:
+
+I have some survey data that is binomial (MCQ080, MCQ300C, SLQ050, SLQ060, BPQ020, and MCQ365A).  The rest is continuous numerical/integer data.  Total cholesterol and systolic blood pressure are 3 digit numbers.  
+
+
+```{r}
+
+nhn_SCH_noNA <- nhanes_raw %>% filter(!is.na(LBXSCH))
+min(nhn_SCH_noNA$LBXSCH)
+max(nhn_SCH_noNA$LBXSCH)
+hist(nhn_SCH_noNA$LBXSCH)
+
+```
+
+I have decided that the numeric values are in a close enough range that they do not need to be scaled.  That having been said, while looking at this, I saw that the max was 639 which sounds clinically unbelievable.  I went back to the Excel sheet, and it looks like this is a single outlier which was probably entered in error (the rest of values are under 350 which do make sense).  I will need to make sure to clean the data for outliers like this in all of my variable categories.  
+
+
+Checking to see how many observations I have for each variable:
+
+```{r}
+
+nhn_DM_obsCount <- apply(!is.na(nhn_DM), 2, sum)
+nhn_DM_obsCount
+
+
+```
+
+
+# Removing rows wherein my dependent variable (LBXGH) is NA
+
+
+```{r}
+
+nhn_GH_noNA <- nhn_DM %>% filter(!is.na(LBXGH))
+head(nhn_GH_noNA)
+dim(nhn_GH_noNA)
+
+```
+
+Okay, now how many observations do I have for each variable now that I am only looking at the rows for which LBXGH was not NA?
+
+```{r}
+
+
+nhn_DM_obsCount2 <- apply(!is.na(nhn_GH_noNA), 2, sum)
+nhn_DM_obsCount2
+
+#Just to make it easy to look at how many NAs are in each column, I will look at this vector as well"
+
+nhn_DM_NACount <- apply(is.na(nhn_GH_noNA), 2, sum)
+nhn_DM_NACount
+
+#Get rid of categories that have more NAs--get rid of PAQ655, 706
+#your Y dependent variable must be normally distributed.  If you plot your Y and it is not normally distributed, you should do a log transformation.
+
+
+```
+
+Good news!  I have data for most of the rows for most of the variables that I planned to evaluate.  I will have to be careful when looking at the questions about exercise PAQ655 and PAQ706 because of their low response rates.  Bummer!  I wanted to have a measure of daily exercise in the model, but I think I will plan on leaving those questions out for now.  I do still have PAQ710 and PAQ715 which ask about sedentary behavior which is something.
+
+
+# Clearing up some more of the NA problems
+
+I want to be strategic about how/whether I remove more of the NA values.  I am going to ignore PAQ655 and PAQ706 for now (and possibly I will ignore them completely).  It looks like other than those two, the largest number of NAs appears in MCQ300c.  MCQ300c has 1251 NAs but still has 5392 observations.  5392 seems like a respectable number of data points to me.  If remove all the rows where MCQ300c is NA, will that also remove all of the NAs from the other variables (except my exercise variables)?
+
+
+```{r}
+
+a1 <- nhn_GH_noNA %>% filter(!is.na(MCQ300C))
+
+a1_obsCount <- apply(is.na(a1), 2, sum)
+a1_obsCount
+str(a1)
+
+```
+
+Bummer again!  I still have over 200 NAs in the income variable.  Let's see what happens if I remove those rows.  Will I be able to live with it or will I want to go back and leave some NAs in MCQ300? 
+
+
+```{r}
+
+b2 <- a1 %>% filter(!is.na(IND235))
+
+b2_obsCount <- apply(is.na(b2), 2, sum)
+b2_obsCount
+
+```
+
+Rrrgh!  Still almost 70 in some of the labs.   How many rows will I have left if I remove those NAs as well? 
+
+```{r}
+
+c3 <- b2 %>% filter(!is.na(LBXSCH))
+
+c3_obsCount <- apply(is.na(c3), 2, sum)
+c3_obsCount
+nrow(c3)
+
+```
+
+I still have over 5000 observations which seems pretty good to me, but I did lose just under 20% of the observations by removing MCQ300c.  Tough decision.  Time to think about what these variables really mean.  MCQ300c asks whether the respondent has a family history of diabetes.  I suspect this will be a strong predictor of the respondent's A1c level.  Is there something about the people who did not provide this family history information that is different than those who did provide the information?  Will removing these observations introduce additional bias to my model?  I cannot think of a reason that the MCQ300c non-responders would be substantially different than the other participants, so I am going to remove those rows.
+
+```{r}
+# Just renaming, so that the data frame name will remind me what it is
+nhn_DM_noNA <- c3
+str(nhn_DM_noNA)
+```
+
+
+# Finding a removing outliers
+
+In reviewing the data (see above), I noticed an outlier in LBXSCH (the 639) and I also noticed that for 
+I think I had better take an even closer look at my selected variables and remove any obvious outliers.  
+
+
+```{r}
+
+unique(nhn_DM_noNA$MCQ080)
+unique(nhn_DM_noNA$SLQ050)
+unique(nhn_DM_noNA$SLQ060)
+unique(nhn_DM_noNA$BPQ020)
+d4 <- nhn_DM_noNA %>% filter(LBXSCH != 639)
+nrow(d4)
+
+# ask about how to do this at office hours:
+# f5 <- d4 %>% filter(LBXSATSI != 269) %>% filter(as.numeric(LBXSGTSI < 220))
+# Also:  what is this error and how do I avoid it?:  Warning: longer object length is not a multiple of shorter object lengthWarning: longer object length is not a multiple of shorter object length.
+
+nhn_DM_noNA_filtered <- d4 %>% filter(LBXSATSI != 269) %>% filter(LBXSGTSI != c(220, 280, 284, 396)) %>% filter(LBXSCH != c(330, 343, 358)) %>% filter(MCQ080 != 9) %>% filter(MCQ300C != 9) %>% filter(MCQ365A != 9) %>% filter(BPQ020 != 9) %>%  filter(SLQ060 != 9) %>% filter(PAQ710 != 99)
+nrow(nhn_DM_noNA_filtered)
+
+
+# LBXGH   LBXSUA LBXSGTSI LBXSATSI   LBXSCH RIDAGEYR   IND235   MCQ080  MCQ300C   PAQ710   PAQ715   PAQ655   PAQ706  SLQ050   SLQ060   BPQ020   BPXSY1  MCQ365A 
+
+```
+
+Removing MCQ300c = 9 (don't know) removed almost 100 more rows, but since this is for my purposes the same as having a value of NA, and I already decided to remove the rows with NA in this category, I feel that removing the "don't know" response is reasonable.  The rest of the outliers were single digit (or even single outlier), so I still have almost 5000 observations to work with.  I looked at all of the variables; any variable that I did not filter above, did not appear to have outliers. 
+
+
+Black text
+
+
+
+# Blue text
+
+Black text
+Black text
+
+
+```{r}
+
+# Do I need to say as.factor for the categorical variable income?  I think yes because there are categories 1-15, but then there are categories 77 and 99 which just mean refused and don't know.
+
+#PAQ710 and PAQ715 0-5 increasing number of hours; then 8 is don't watch TV/use computer (what do I do about this?)
+
+# final name as of this point is:  nhn_DM_noNA_filtered
+
+finalname$IND235 <- factor(finalname$IND235)
+
+
+```
+
+Black text
+Black text
+
+
+# Blue text
+
+Black text
+Black text
+
+
+```{r}
+
+```
+
+Black text
+Black text
+
+
+
+
+# Blue text
+
+I tried looking at the pairs for all of the variables that I am still considering, but I got an error message about "finite 'ylim'" which an article from ProgrammingR (https://www.programmingr.com/r-error-messages/fixing-r-error-message-error-in-plot-window-need-finite-ylim-values/) said was related to having a column of NAs.  I removed the PAQ655 and PAQ706 that I have been wishful thinking keeping in my data frame and my pairs plots worked just fine:
+
+```{r}
+
+nhn_DM_for_pairs <- nhn_DM_noNA_filtered %>% select(-PAQ655, -PAQ706)
+head(nhn_DM_for_pairs)
+pairs(nhn_DM_for_pairs)
+unique(nhn_DM_for_pairs$MCQ080)
+unique(nhn_DM_for_pairs$MCQ365A)
+
+```
+
+Black text
+Black text
+
+
+
+# Creating Training and Testing Data Sets
+
+```{r}
+
+
+set.seed(715)
+train_indices <- createDataPartition(y = nhn_DM_for_pairs$LBXGH, p = 0.8, list = FALSE)
+train_DM <- nhn_DM_for_pairs[train_indices, ]
+test_DM <- nhn_DM_for_pairs[-train_indices, ]
+nrow(train_DM)
+nrow(test_DM)
+
+```
+
+3995 observations in my training data and 998 observations in my test data.
+
+
+# Blue text
+
+
+***Need to go back and answer questions about evaluating the assumptions for this model (see LINE problem set 3)***
+I suspect that MCQ080 and MCQ365a are collinear.  I left them both in to be interesting.  But as these are binomial data
+
+```{r}
+
+#modified code from lecture 10 slides and class exercise
+
+lm_DM1 = lm(LBXGH~LBXSUA+LBXSGTSI+LBXSATSI+LBXSCH+RIDAGEYR+IND235+MCQ080+MCQ300C+PAQ710+PAQ715+SLQ050+SLQ060+BPQ020+BPXSY1+MCQ365A, data = train_DM)
+summary(lm_DM1)
+
+# LBXGH   LBXSUA LBXSGTSI LBXSATSI   LBXSCH RIDAGEYR   IND235   MCQ080  MCQ300C   PAQ710   PAQ715   PAQ655   PAQ706  SLQ050   SLQ060   BPQ020   BPXSY1  MCQ365A 
+
+```
+
+Black text
+Black text
+
+
+# Blue text
+
+Black text
+Black text
+
+
+```{r}
+
+#modified from in-class lesson 10 exercise code
+library(MASS)
+
+full_lm_nhn = lm(LBXTC~RIDAGEYR+INDFMPIR+LBXSGL+LBXGH+LBXHCT+LBXHGB+LBXLYPCT, data = nhn)
+base_lm_nhn = lm(LBXTC~1, data=nhn)
+
+nhn_stepAIC <- stepAIC(full_lm_nhn, scope = list(lower = base_lm_nhn, upper = full_lm_nhn), data = nhn, direction = "both")
+
+# full_lm_cf = lm(pemax~., data=cystfibr)
+# base_lm_cf = lm(pemax~1, data=cystfibr)
+# stepAIC(full_lm_cf, scope = list(lower = base_lm_cf, upper = full_lm_cf), data = cystfibr, direction = "both")
+
+summary(nhn_stepAIC)
+
+```
+
+Black text
+Black text
+
+
+# Blue text
+
+Black text
+Black text
+
+
+```{r}
+
+```
+
+Black text
+Black text
+
+
+# Regression Modeling
+
+***Need to go back and answer questions about evaluating the assumptions for this model (see LINE problem set 3)***
+I chose multiple linear regression because my dependent variable is a continous numerical variable, and I want to model the relationship between my dependent variable (HgbA1c level) and multiple independent variables that I believe will be predictive. I suspect that MCQ080 and MCQ365a are collinear.  I left them both in to be interesting.  But as these are binomial data
+
+```{r}
+
+#modified code from lecture 10 slides and class exercise
+
+lm_DM1 = lm(LBXGH~LBXSUA+LBXSGTSI+LBXSATSI+LBXSCH+RIDAGEYR+IND235+MCQ080+MCQ300C+PAQ710+PAQ715+SLQ050+SLQ060+BPQ020+BPXSY1+MCQ365A, data = train_DM)
+summary(lm_DM1)
+
+# LBXGH   LBXSUA LBXSGTSI LBXSATSI   LBXSCH RIDAGEYR   IND235   MCQ080  MCQ300C   PAQ710   PAQ715   PAQ655   PAQ706  SLQ050   SLQ060   BPQ020   BPXSY1  MCQ365A 
+
+```
+
+
+I have some variables that have significant p-values, but the model itself has an adjusted R-squared of 0.1742, so this model only explains 17.4% of the variance
+
+
+# Conducting Iterative Variable Selection
+
+Let's see if we can narrow down those variables, so that I can make a tighter model
+
+
+```{r}
+
+#modified from in-class lesson 10 exercise code
+library(MASS)
+
+full_lm_DM1 = lm(LBXGH~LBXSUA+LBXSGTSI+LBXSATSI+LBXSCH+RIDAGEYR+IND235+MCQ080+MCQ300C+PAQ710+PAQ715+SLQ050+SLQ060+BPQ020+BPXSY1+MCQ365A, data = train_DM)
+base__lm_DM1 = lm(LBXGH~1, data = train_DM)
+
+DM1_stepAIC <- stepAIC(full_lm_DM1, scope = list(lower = base__lm_DM1, upper = full_lm_DM1), data = train_DM, direction = "both")
+
+summary(DM1_stepAIC)
+
+```
+
+Black text
+Black text
+
+
+# Model 2
+
+Black text
+***new model using the 11 variables the above stepwise AIC chose: ***
+
+```{r}
+
+#modified code from lecture 10 slides and class exercise
+
+lm_DM2 = lm(LBXGH ~ LBXSUA + LBXSATSI + RIDAGEYR + IND235 + 
+    MCQ080 + MCQ300C + PAQ715 + SLQ050 + BPQ020 + BPXSY1 + MCQ365A, data = train_DM)
+summary(lm_DM2)
+
+# LBXGH   LBXSUA LBXSGTSI LBXSATSI   LBXSCH RIDAGEYR   IND235   MCQ080  MCQ300C   PAQ710   PAQ715   PAQ655   PAQ706  SLQ050   SLQ060   BPQ020   BPXSY1  MCQ365A 
+
+```
+
+
+Not much better
+Black text
+
+# Model 3a
+
+What if I took out the variables that I think may be collinear:  MCQ080 and MCQ365a both ask about being overweight.  MCQ080 is more specific, but I wonder how predictive each variable would be on its own.  
+
+
+```{r}
+
+#modified code from lecture 10 slides and class exercise
+
+lm_DM_MCQ080 = lm(LBXGH~MCQ080, data = train_DM)
+summary(lm_DM_MCQ080)
+lm_DM_MCQ365A = lm(LBXGH~MCQ365A, data = train_DM)
+summary(lm_DM_MCQ365A)
+
+# LBXGH   LBXSUA LBXSGTSI LBXSATSI   LBXSCH RIDAGEYR   IND235   MCQ080  MCQ300C   PAQ710   PAQ715   PAQ655   PAQ706  SLQ050   SLQ060   BPQ020   BPXSY1  MCQ365A 
+
+```
+
+Both have signficant p-values, but MCQ365A actually has a better (higher) Multiple R-Squared, so MCQ365A explains more of the variance of my dependent variable. 
+
+
+
+# Model 3b
+
+BPQ020 and BPXSYS1 both evaluate the person's blood pressure.  BPQ020 asks if a person has a diagnosis of hypertension (high blood pressure); BPXSYS1 tells me what a person's blood pressure currently is.  From the literature, it is known that high blood pressure is a risk factor for diabetes, but I'm not sure which measure I think would be more relevant.  A person could be anxious, in pain, or have some other reason for having a 1-time elevated blood pressure at the time of the nhanes evaluation without having a high blood pressure condition; in this case the elevated blood pressure would be less likely to be predictive of diabetes.  On the otherhand, a person with a known diagnosis of hypertension (elevated blood pressure) may take medications that keep their blood pressure consistently well-controlled whereas others with hypertension may not control their blood pressure well.  The uncontrolled hypertensives would be more likely to be predictive of diabetes, but then the diagnosis itself would not be predictive of diabetes and the actual blood pressure reading at the time of the nhanes evaluation would then be the more predictive variable.  Let's see what modeling says: 
+
+
+```{r}
+
+#modified code from lecture 10 slides and class exercise
+
+lm_DM_BPQ020 = lm(LBXGH~BPQ020, data = train_DM)
+summary(lm_DM_BPQ020)
+lm_DM_BPXSY1 = lm(LBXGH~BPXSY1, data = train_DM)
+summary(lm_DM_BPXSY1)
+
+
+```
+
+
+Again both have signficant p-values, but in single variable linear regression with this data set, the diagnosis of hypertension explains more of the variance in my A1c data.
+
+Black text
+
+
+# Model 3c
+
+What if I take the above two less predictive variables out of my original model?
+
+```{r}
+
+#modified code from lecture 10 slides and class exercise
+
+lm_DM3c = lm(LBXGH~LBXSUA+LBXSGTSI+LBXSATSI+LBXSCH+RIDAGEYR+IND235+MCQ300C+PAQ710+PAQ715+SLQ050+SLQ060+BPQ020+MCQ365A, data = train_DM)
+summary(lm_DM3c)
+
+# LBXGH   LBXSUA LBXSGTSI LBXSATSI   LBXSCH RIDAGEYR   IND235   MCQ080  MCQ300C   PAQ710   PAQ715   PAQ655   PAQ706  SLQ050   SLQ060   BPQ020   BPXSY1  MCQ365A 
+
+```
+
+Rsquared is just a little lower without these variables.
+
+
+# Re-conducting Iterative Variable Selection
+
+Does removing those two variables have any impact on what variables will be selected using the stepwise AIC iteritive method?
+
+
+```{r}
+
+#modified from in-class lesson 10 exercise code
+
+full_lm_DM3c = lm(LBXGH~LBXSUA+LBXSGTSI+LBXSATSI+LBXSCH+RIDAGEYR+IND235+MCQ300C+PAQ710+PAQ715+SLQ050+SLQ060+BPQ020+MCQ365A, data = train_DM)
+base__lm_DM3c = lm(LBXGH~1, data = train_DM)
+
+DM3c_stepAIC <- stepAIC(full_lm_DM3c, scope = list(lower = base__lm_DM3c, upper = full_lm_DM3c), data = train_DM, direction = "both")
+
+summary(DM3c_stepAIC)
+
+```
+
+Black text
+
+
+# Blue text
+
+Black text
+Black text
+
+
+```{r}
+
+```
+
+Black text
+Black text
+
+
+# Blue text
+
+Black text
+Black text
+
+
+```{r}
+
+```
+
+Black text
+Black text
+
+
+# Blue text
+
+Black text
+Black text
+
+
+```{r}
+
+```
+
+Black text
+Black text
+
+
+# Blue text
+
+Black text
+Black text
+
+
+```{r}
+
+```
+
+Black text
+Black text
+
+## Exploring the data
+
+I scrolled through the Excel file and there seem to be quite a lot of NAs.  10,175 rows of data seems like a good amount of observations, but I some c
+
+
+
+All these predictors are continuous, so you don't need to make any indicator variables. Are there any variables on a different scale? If so, you may want to scale them.
+
+```{r, eval=TRUE}
+
+
+pairs(pima_train)
+
+var(pima_train$glu)
+var(pima_train$ped)
+
+scale(pima_train$glu)
+
+#when you scale, it changes the interpretation.  Now instead of 1 increase in height leads to 0.5 increase in PEmax, now we will say 1 SD increase in height leads to a 0.5 SD increase in PEmax
+
+# library(tidyverse)
+# library(dplyr)
+pt_typnum = pima_train %>% mutate("typenum"=(ifelse(pima_train$type == "Yes", 1, 0)))
+pt_typnum$glu = scale(pt_typnum$glu)
+pt_typnum$bp = scale(pt_typnum$bp)
+pt_typnum$skin = scale(pt_typnum$skin)
+pt_typnum$bmi = scale(pt_typnum$bmi)
+pt_typnum$ped = scale(pt_typnum$ped)
+pt_typnum$age = scale(pt_typnum$age)
+head(pt_typnum)
+
+```
+
+
+
+
+## Building a simple model
+
+Let's start off with a very simple model. Pick 2-3 variables that you think might be most related to diabetes (This can be based on your prior knowledge, checking correlations, looking at plots). Fit a logistic regression model with these predictors where the response variable is diabetes. As a reminder, we have included a template for the syntax. 
+```{r, eval=TRUE}
+## Template for syntax: glm(dependent_var~independent_var, data = dataset, family = "binomial")
+
+```
+
+Look at the model summary. Which variables are significantly associated with diabetes? 
+```{r, eval=TRUE}
+
+```
+
+## Comparing models
+
+Add another predictor that you're interested in to the model. How does the residual deviance change compared to the initial model? How does the AIC change? Which model is better?
+```{r, eval=TRUE}
+#lower AIC better fit of model
+
+```
+
+We can formally compare these models using a variance-based test again — it's slightly different from an F test now, but the same idea. Using the anova function, we can run a Likelihood Ratio test that will assess if a more complex model explains significantly more variance than a simpler model. Fill in the template below with your two models to calculate the test statistic and p value (remember: your models must be nested!)
+```{r, eval=TRUE}
+anova(_SIMPLE_MODEL_, _COMPLEX_MODEL_, test = "Chisq")
+#now this is a likelihood ratio test not an F test because we specified chisq
+
+```
+
+## Adding interactions
+
+Choose a pair of variables in your model whose effects might be interacting and add an interaction term (remember the syntax: var1*var2) How does the residual deviance change compared to the previous model? How does the AIC change? Which model would you choose?
+```{r, eval=TRUE}
+
+```
+
+# Bonus Exercise #1: Variable selection
+Use stepAIC to choose variables. You can use any of the three settings: forward, backward, or both. First, build your full and baseline models:
+```{r, eval=TRUE}
+full_logmod = glm(______, data = pima_train, family = "binomial")
+base_logmod = glm(______, data = pima_train, family = "binomial")
+```
+
+Then, run stepAIC:
+```{r, eval=TRUE}
+## Template for syntax: stepAIC(starting_model, scope = list(lower = baseline_model, upper = full_model), data = dataset, direction = "forward/backward/both")
+
+```
+
+# Bonus Exercise #2: Test the model on a held out dataset
+
+MASS also has a held-out test dataset with data from additional Pima participants.
+```{r, eval=TRUE}
+pima_test <- Pima.te
+head(pima_test)
+```
+If you transformed the training data in any way, repeat those transformations on the test data:
+```{r, eval=TRUE}
+
+```
+
+Choose a model that you fit above. Use the `predict` function to predict diabetes outcomes for these test individuals using the model. Sample syntax is provided below.
+```{r, eval=TRUE}
+# Syntax: predict(fitted_model, new_data, type = "response)
+
+```
+
+Note that the predicted values are continuous — that's because we're predicting the probability of diabetes, instead of a yes/no value. Transform these probabilities to yes/no: if p > .5, then "Yes"; otherwise "No"
+```{r, eval=TRUE}
+
+```
+
+Compare the actual diabetes status for the test samples to the predicted status.
+```{r, eval=TRUE}
+
+#survival analysis--less common but good for disease outcome analysis.  Analysis of time to event--doesn't have to be until time of death (could be admission to discharge)
+
+```
